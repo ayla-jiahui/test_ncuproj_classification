@@ -38,7 +38,11 @@ valid_labels_list = list(valid_labels)
 def normalize_labels(label_list):
     return list({label if label in valid_labels else "其他" for label in label_list})
 
-excel_file_path = "TrainingSet/113索資.xlsx"
+tarining_set_path = os.getenv("TRAINING_SET_PATH")
+if tarining_set_path:
+    excel_file_path = f"{tarining_set_path}/113索資.xlsx"
+else:
+    excel_file_path = f"113索資.xlsx"
 df = pd.read_excel(excel_file_path)[['索取資料題目', '承辦機關']].dropna()
 df.columns = ['text', 'label']
 
