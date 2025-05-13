@@ -3,6 +3,7 @@ import csv
 import torch
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 from tqdm import tqdm
 from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
@@ -13,9 +14,17 @@ from transformers import (
     TrainingArguments, Trainer, TrainerCallback, EvalPrediction
 )
 
-# ===== 資料讀取與預處理 =====
+# apply .env environment variables
+load_dotenv()
 
-df = pd.read_excel("113索資.xlsx")[['索取資料題目', '承辦機關']].dropna()
+# ===== 資料讀取與預處理 =====
+tarining_set_path = os.getenv("TRAINING_SET_PATH")
+if tarining_set_path:
+    excel_file_path = f"{tarining_set_path}/113索資.xlsx"
+else:
+    excel_file_path = f"113索資.xlsx"
+
+df = pd.read_excel(excel_file_path)[['索取資料題目', '承辦機關']].dropna()
 df.columns = ['text', 'label']
 
 valid_labels = {
@@ -150,11 +159,20 @@ trainer = Trainer(
     callbacks=[TQDMProgressBar]
 )
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# check is MPS supported (MacOS)
+if torch.backends.mps.is_available():
+    print("MPS is available")
+    device = torch.device("mps")
+else:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 model.to(device)
 
 print("開始訓練...")
 trainer.train()
+
+# presist model path
+trainer.save_model("./model_saved")
 
 # ===== 使用最佳模型進行預測並儲存 CSV =====
 
