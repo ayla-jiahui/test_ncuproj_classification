@@ -47,9 +47,10 @@ def reclassify_labels(label_list):
 
 # 新增一個欄位存放重新分類後的標籤
 merged_data["new_label"] = merged_data["label"].apply(reclassify_labels)
+print(type(merged_data["new_label"][0])) #list
 
 # 確保目錄存在
 os.makedirs("./merged_data", exist_ok=True)
 
 # 儲存結果
-merged_data.to_csv("./merged_data/merged_data_0516.csv", index=False, encoding="utf-8-sig")
+merged_data.to_csv("./merged_data/merged_data_0517.csv", index=False, encoding="utf-8-sig")
