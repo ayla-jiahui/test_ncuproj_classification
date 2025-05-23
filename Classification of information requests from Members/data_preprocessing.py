@@ -6,6 +6,16 @@ import ast
 
 load_dotenv()
 
+path = r".\Classification of information requests from Members"
+os.chdir(path)
+print(os.getcwd())
+
+#設定file from path
+raw_file = "1140501-0511_議員索資.xlsx"
+marged_file = "./merged_data/merged_data_11405.csv"
+merged_final_file = "./merged_data/merged_final_11405.csv"
+
+# ==============================================
 # 讀取 label_structure
 label_structure_path = os.getenv("LABEL_STRUCTURE_PATH", "./label_structure")
 label_structure_file = f"{label_structure_path}/label_structure.xlsx"
@@ -21,20 +31,38 @@ print(f"成功載入別名對照表。")
 
 # 讀取 raw_data 並清理空值
 raw_data_path = os.getenv("RAW_DATA_PATH", "./raw_data")
-raw_data_file = f"{raw_data_path}/113索資_latest.xlsx"
-raw_data = pd.read_excel(raw_data_file)[['索取資料題目', '承辦機關']]
+raw_data_file = os.path.join(raw_data_path, raw_file)
+raw_data = pd.read_excel(raw_data_file, header=2)[['索取資料題目', '承辦機關']]
+print(raw_data.head())
+
 raw_data.columns = ['text', 'original_label']
 raw_data = raw_data.dropna()
+print(f"成功讀取 {raw_data.shape[0]} 條原始數據。")
+
+raw_data['text'] = raw_data['text'].str.replace('_x000D_', ' ', regex=False)\
+                       .str.replace('\r', ' ', regex=False)\
+                       .str.replace('\n', ' ', regex=False)\
+                       .str.replace('\t', ' ', regex=False)\
+                       .str.strip()
+print(raw_data.head())
 
 # 合併相同的 text，保留所有唯一的完整標籤
+# 對 raw_data 以 "text" 欄位進行分組，as_index=False 表示分組後仍保留 "text" 為欄位
 merged_data = raw_data.groupby("text", as_index=False).agg({
+    # 對每個 group 的 "original_label" 欄位進行彙總
+    # 用 lambda 函式將每組的原始標籤去重後轉為 list
     "original_label": lambda x: list(x.unique())
-}) # 14782
-print(merged_data.shape)
+})
+print(f"合併後剩 {merged_data.shape[0]} 條原始數據。")
 
 # 確保目錄存在
 os.makedirs("./merged_data", exist_ok=True)
-# merged_data.to_csv("./merged_data/merged_data_latest.csv", index=False, encoding="utf-8-sig")
+try:
+    # 儲存合併後的數據
+    merged_data.to_csv(marged_file, index=False, encoding="utf-8-sig")
+    print(f"合併後的數據已儲存到 {marged_file}")
+except Exception as e:
+    print(f"儲存合併後的數據時發生錯誤: {e}")
 
 # =======================================================
 
@@ -117,59 +145,78 @@ def reclassify_labels_for_row(list_of_original_labels_for_a_text, label_structur
     # 對於當前行文本的所有分類結果，去重並保持順序
     return list(dict.fromkeys(reclassified_for_this_text))
 
-# def reclassify_labels(label_list):
-#     reclassified_labels = []
-#     for lbl in label_list:
-#         matched = False
-#         for _, row in label_structure.iterrows():
-#             secondary = str(row["secondary"]) if not pd.isna(row["secondary"]) else ""
-#             primary = str(row["primary"]) if not pd.isna(row["primary"]) else ""
-#             if secondary and secondary in lbl:
-#                 reclassified_labels.append(secondary)
-#                 matched = True
-#                 break
-#             if primary and primary in lbl:
-#                 reclassified_labels.append(primary)
-#                 matched = True
-#                 break
-#         if not matched:
-#             reclassified_labels.append("其他")
-#     # 直接回傳 list
-#     return list(dict.fromkeys(reclassified_labels))
-
-
 print("開始對合併後的數據進行標籤重分類...")
 merged_data['reclassified_label'] = merged_data['original_label'].apply(
     lambda list_of_labels: reclassify_labels_for_row(list_of_labels, label_structure, specific_primary_to_keep_secondary_set, alias_to_full_name) # 使用別名對照表進行標籤重分類
 )
-print("標籤重分類完成。")
+print("初步分類結果 (reclassified_label) 前5行:")
+print(merged_data[['text', 'original_label', 'reclassified_label']].head())
+
+# --- 根據初步分類結果的標籤數量，過濾 'reclassified_label' ---
+max_classified_labels_thereshold = 10 # 設定閾值
+
+def filter_reclassified_by_count(classified_label_list, threshold):
+
+    # 如果初步分類後的標籤列表中的標籤數量超過閾值，則將該列表修改為 ['其他']。
+
+    if not isinstance(classified_label_list, list):
+        # 如果輸入不是列表 (例如可能是 None 或其他類型)，
+        print(f"警告: 輸入 filter_reclassified_by_count 的不是列表: {classified_label_list}, 類型: {type(classified_label_list)}")
+        return classified_label_list
+
+    if len(classified_label_list) > threshold:
+        # print(f"初步分類標籤數量 {len(classified_label_list)} > {threshold}. 原分類: {classified_label_list} ➜ 更改為: ['其他']")
+        return ["其他"] # 返回一個包含單個標籤 "其他" 的列表
+    else:
+        # 保持原始的初步分類結果
+        return classified_label_list
+
+print(f"\n開始根據初步分類後的標籤數量 (閾值 > {max_classified_labels_thereshold}) 調整標籤...")
+
+# 創建新列 'final_label'
+merged_data['final_label'] = merged_data['reclassified_label'].apply(
+    lambda lst: filter_reclassified_by_count(lst, max_classified_labels_thereshold)
+)
+
+print("按初步分類標籤數量調整完成。")
+
+print(f"\n調整前後的標籤對比 (前5行):")
+print(merged_data[['text', 'reclassified_label', 'final_label']].head(5)) # 打印更多行看看效果
+
+# 有多少行的標籤被修改了
+num_modified = (merged_data['reclassified_label'].astype(str) != merged_data['final_label'].astype(str)).sum()
+print(f"\n總共有 {num_modified} 行的標籤因為數量超限被修改為 ['其他']。")
 
 # 查看結果
-print(merged_data.head())
+print(merged_data.shape)
 
 # 儲存結果
-# merged_data.to_csv("./merged_data/merged_data_0522.csv", index=False, encoding="utf-8-sig")
-
+try:
+    # 儲存最終的數據
+    merged_data.to_csv(merged_final_file, index=False, encoding="utf-8-sig")
+    print(f"最終的數據已儲存到 {merged_final_file}")
+except Exception as e:
+    print(f"儲存最終的數據時發生錯誤: {e}")
 # ==========================================================
 # 輸入為json檔案
 
 # 讀取並預處理 outside JSON 數據
-with open("1140428_民政部門質詢D1_簡報表.json", "r", encoding="utf-8") as f:
-    outside_data = json.load(f)
-print(f"\n成功讀取 {len(outside_data)} 條外部數據。")
+# with open("1140428_民政部門質詢D1_簡報表.json", "r", encoding="utf-8") as f:
+#     outside_data = json.load(f)
+# print(f"\n成功讀取 {len(outside_data)} 條外部數據。")
 
-for item in outside_data:
-    original_labels = item.get("labels", [])
-    print(f"原始標籤: {original_labels}")
-    reclassified = reclassify_labels_for_row(
-        original_labels,
-        label_structure,
-        specific_primary_to_keep_secondary_set,
-        alias_to_full_name
-    )
-    item["reclassified_labels"] = reclassified
-    print(f"重分類後的標籤: {reclassified}")
+# for item in outside_data:
+#     original_labels = item.get("labels", [])
+#     print(f"原始標籤: {original_labels}")
+#     reclassified = reclassify_labels_for_row(
+#         original_labels,
+#         label_structure,
+#         specific_primary_to_keep_secondary_set,
+#         alias_to_full_name
+#     )
+#     item["reclassified_labels"] = reclassified
+#     print(f"重分類後的標籤: {reclassified}")
 
-# 儲存結果
-with open("140428_民政部門質詢D1_簡報表_WithReclassified.json", "w", encoding="utf-8") as f:
-    json.dump(outside_data, f, ensure_ascii=False, indent=2)
+# # 儲存結果
+# with open("140428_民政部門質詢D1_簡報表_WithReclassified.json", "w", encoding="utf-8") as f:
+#     json.dump(outside_data, f, ensure_ascii=False, indent=2)
