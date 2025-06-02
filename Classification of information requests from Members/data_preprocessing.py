@@ -15,20 +15,6 @@ raw_file = "1140501-0511_議員索資.xlsx"
 marged_file = "./merged_data/merged_data_11405.csv"
 merged_final_file = "./merged_data/merged_final_11405.csv"
 
-# ==============================================
-# 讀取 label_structure
-label_structure_path = os.getenv("LABEL_STRUCTURE_PATH", "./label_structure")
-label_structure_file = f"{label_structure_path}/label_structure.xlsx"
-label_structure = pd.read_excel(label_structure_file)
-
-# === 從 JSON 文件載入別名/縮寫對照表 ===
-with open("alias_mapping.json", "r", encoding="utf-8") as f:
-    alias_to_full_name = json.load(f)
-    # print(type(alias_to_full_name))
-print(f"成功載入別名對照表。")
-
-# ===========================================
-
 # 讀取 raw_data 並清理空值
 raw_data_path = os.getenv("RAW_DATA_PATH", "./raw_data")
 raw_data_file = os.path.join(raw_data_path, raw_file)
@@ -64,6 +50,17 @@ try:
 except Exception as e:
     print(f"儲存合併後的數據時發生錯誤: {e}")
 
+# ==============================================
+# 讀取 label_structure
+label_structure_path = os.getenv("LABEL_STRUCTURE_PATH", "./label_structure")
+label_structure_file = f"{label_structure_path}/label_structure.xlsx"
+label_structure = pd.read_excel(label_structure_file)
+
+# === 從 JSON 文件載入別名/縮寫對照表 ===
+with open("alias_mapping.json", "r", encoding="utf-8") as f:
+    alias_to_full_name = json.load(f)
+    # print(type(alias_to_full_name))
+print(f"成功載入別名對照表。")
 # =======================================================
 
 def preprocess_label_with_aliases(label, alias_map):
@@ -165,7 +162,7 @@ def filter_reclassified_by_count(classified_label_list, threshold):
         return classified_label_list
 
     if len(classified_label_list) > threshold:
-        # print(f"初步分類標籤數量 {len(classified_label_list)} > {threshold}. 原分類: {classified_label_list} ➜ 更改為: ['其他']")
+        print(f"初步分類標籤數量 {len(classified_label_list)} > {threshold}. 原分類: {classified_label_list} ➜ 更改為: ['其他']")
         return ["其他"] # 返回一個包含單個標籤 "其他" 的列表
     else:
         # 保持原始的初步分類結果
@@ -193,7 +190,7 @@ print(merged_data.shape)
 # 儲存結果
 try:
     # 儲存最終的數據
-    merged_data.to_csv(merged_final_file, index=False, encoding="utf-8-sig")
+    # merged_data.to_csv(merged_final_file, index=False, encoding="utf-8-sig")
     print(f"最終的數據已儲存到 {merged_final_file}")
 except Exception as e:
     print(f"儲存最終的數據時發生錯誤: {e}")
@@ -220,3 +217,22 @@ except Exception as e:
 # # 儲存結果
 # with open("140428_民政部門質詢D1_簡報表_WithReclassified.json", "w", encoding="utf-8") as f:
 #     json.dump(outside_data, f, ensure_ascii=False, indent=2)
+
+with open('./sampled_data/multi_label_samples.json', 'r', encoding='utf-8') as f:
+  outside_data_json = json.load(f)
+  for label_name, samples_list in outside_data_json.items():
+    # print(f"標籤 '{label_name}' 的樣本數量: {len(samples_list)}")
+    for sample in samples_list:
+        original_labels = sample.get("labels", [])
+        print(f"原始標籤: {original_labels}")
+        reclassified = reclassify_labels_for_row(
+            original_labels,
+            label_structure,
+            specific_primary_to_keep_secondary_set,
+            alias_to_full_name
+        )
+        sample["reclassified_labels"] = reclassified
+        print(f"重分類後的標籤: {reclassified}")
+# 儲存結果
+with open("./sampled_data/multi_label_samples_with_reclassified.json", "w", encoding="utf-8") as f:
+    json.dump(outside_data_json, f, ensure_ascii=False, indent=2)
