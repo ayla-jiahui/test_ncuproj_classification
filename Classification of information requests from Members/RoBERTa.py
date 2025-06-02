@@ -12,6 +12,8 @@ from transformers import (
     Trainer, TrainerCallback, EvalPrediction, AutoTokenizer)
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+import jieba
+import re
 
 # Focal Loss 
 class FocalLoss(torch.nn.Module):
@@ -70,7 +72,7 @@ df['text'] = df['text'].apply(remove_redundant_words)
 
 # ===== 標籤對應與正規化 =====
 label_mapping = {
-    "市政大樓公共事務管理中心": "秘書處",
+"市政大樓公共事務管理中心": "秘書處",
 
     "殯葬管理處": "民政局", 
     "孔廟管理委員會": "民政局",
@@ -81,6 +83,7 @@ label_mapping = {
     "圖書館": "教育局", 
     "動物園": "教育局", 
     "教師研習中心": "教育局", 
+    "教研中心":"教育局",
     "天文科學教育館": "教育局", 
     "家庭教育中心": "教育局",
     "青少年發展暨家庭教育中心": "教育局",
@@ -177,7 +180,9 @@ label_mapping = {
     "北投區公所": "民政局",
     "文山區公所": "民政局",
     "萬華區公所": "民政局",
+
 }
+
 
 valid_labels = {
     "臺北市政府",
@@ -194,6 +199,12 @@ df['label'] = df['label'].replace(label_mapping)
 def normalize_labels(label_list):
     return list({label if label in valid_labels else "其他" for label in label_list})
 
+# 假設你的文字欄位名稱是 'text'
+pattern = r'\b[A-Za-z]\d{5}-\d{8}\b'
+
+# 用正則式替換掉符合格式的文字
+df['text'] = df['text'].apply(lambda x: re.sub(pattern, '', str(x)))
+
 grouped = df.groupby('text')['label'].apply(lambda x: normalize_labels(sorted(set(x)))).reset_index()
 grouped.columns = ['text', 'labels']
 grouped['label_count'] = grouped['labels'].apply(len)
@@ -204,8 +215,20 @@ grouped.to_csv("grouped_text_labels.csv", index=False, encoding="utf-8-sig")
 mlb = MultiLabelBinarizer()
 y = mlb.fit_transform(grouped['labels'])
 
-X_temp, X_test, y_temp, y_test = train_test_split(grouped['text'], y, test_size=0.04, random_state=42)
-train_texts, val_texts, train_labels, val_labels = train_test_split(X_temp, y_temp, test_size=0.2, random_state=42)
+X_temp, X_test, y_temp, y_test = train_test_split(grouped['text'], y, test_size=0.2, random_state=42)
+train_texts, val_texts, train_labels, val_labels = train_test_split(X_temp, y_temp, test_size=0.125, random_state=42)
+
+# ===== 斷句 =====
+train_texts = train_texts.apply(lambda x: " ".join(jieba.cut(x)))
+val_texts = val_texts.apply(lambda x: " ".join(jieba.cut(x)))
+X_test = X_test.apply(lambda x: " ".join(jieba.cut(x)))
+
+train_texts.to_csv("train_texts_Re_jieba.csv", index=False, encoding='utf-8-sig')
+val_texts.to_csv("val_texts_Re_jieba.csv", index=False, encoding='utf-8-sig')
+X_test.to_csv("test_texts_Re_jieba.csv", index=False, encoding='utf-8-sig')
+
+# ===== 確認結果 =====
+print('模式- 預設： ', ' | '.join(train_texts[:3])) 
 
 # ===== 資料集定義 =====
 tokenizer = AutoTokenizer.from_pretrained("hfl/chinese-roberta-wwm-ext", use_fast=True)
@@ -236,12 +259,11 @@ model = BertForSequenceClassification.from_pretrained(
     num_labels=y.shape[1],
     problem_type="multi_label_classification"
 )
-
 def compute_metrics(pred: EvalPrediction):
     logits = pred.predictions
     labels = pred.label_ids.astype(int)
     preds = torch.sigmoid(torch.tensor(logits)).numpy()
-    preds_binary = (preds >= 0.5).astype(int)                               #threshold
+    preds_binary = (preds >= 0.5).astype(int)                               
 
     micro_f1 = f1_score(labels, preds_binary, average='micro')
     macro_f1 = f1_score(labels, preds_binary, average='macro')
@@ -250,6 +272,7 @@ def compute_metrics(pred: EvalPrediction):
         (preds_binary | labels).sum(axis=1) + 1e-8
     )
     sample_accuracy = sample_accuracy.mean()
+    
     return {
         "micro_f1": round(micro_f1, 6),
         "macro_f1": round(macro_f1, 6),
@@ -269,7 +292,7 @@ class TQDMProgressBar(TrainerCallback):
     def on_train_end(self, args, state, control, **kwargs):
         self.train_bar.close()
 
-output_dir = "./model_output200"
+output_dir = "./model_regularization_jieba2"
 os.makedirs(output_dir, exist_ok=True)
 
 training_args = TrainingArguments(
@@ -277,11 +300,17 @@ training_args = TrainingArguments(
     per_device_train_batch_size=16,
     per_device_eval_batch_size=16,
     num_train_epochs=250,
-    logging_strategy = "epoch",
+    logging_strategy="epoch",
     logging_dir='./logs',
     learning_rate=5e-5,
     logging_steps=500,
-    save_strategy="no",
+    save_strategy="epoch",
+    eval_strategy="epoch",
+    save_total_limit=1,
+    load_best_model_at_end=True,
+    metric_for_best_model="macro_f1",
+    greater_is_better=True,
+    report_to=["wandb"],
     eval_steps=500
 )
 
@@ -302,7 +331,7 @@ trainer.train()
 trainer.save_model(output_dir)
 tokenizer.save_pretrained(output_dir)
 
-# ===== 預測與儲存函式 =====
+#===== 預測與儲存函式 =====
 def predict_and_save(texts, labels, filename, batch_size=32):
     model.eval()
     all_probs = []
@@ -324,9 +353,11 @@ def predict_and_save(texts, labels, filename, batch_size=32):
             all_probs.extend(probs)
 
     probs = np.array(all_probs)
-    preds_binary = (probs >= 0.5).astype(int)                               #threshold
+    preds_binary = (probs >= 0.5).astype(int)                            
     predicted_labels = mlb.inverse_transform(preds_binary)
     true_labels = mlb.inverse_transform(labels.astype(int))
+
+
 
     # ===== 顯示評估指標到 terminal =====
     micro_f1 = f1_score(labels, preds_binary, average="micro")
@@ -348,19 +379,26 @@ def predict_and_save(texts, labels, filename, batch_size=32):
 
     # ===== 儲存結果到 CSV =====
     truncated_texts = [text[:200] + "..." if len(text) > 200 else text for text in texts]
-    results_df = pd.DataFrame({
+    results_df = pd.DataFrame({ 
         "text": truncated_texts,
         "true_labels": [", ".join(lbls) for lbls in true_labels],
         "predicted_labels": [", ".join(lbls) for lbls in predicted_labels]
     })
+
+    # 加入 sigmoid 數值
+    label_names = mlb.classes_
+    sigmoid_df = pd.DataFrame(probs, columns=label_names)
+    results_df = pd.concat([results_df, sigmoid_df], axis=1)
+
+    # 在第一列顯示標籤名稱
     results_df.to_csv(filename, index=False, encoding="utf-8-sig")
     print(f"{filename} 已儲存。")
 
 # ===== 儲存驗證集預測 =====
-predict_and_save(val_texts, val_labels, "val_predictions.csv")
+predict_and_save(val_texts, val_labels, "val_predictions_regularization_jieba2.csv")
 
 # ===== 儲存測試集預測 =====
-predict_and_save(X_test, y_test, "test_predictions.csv")
+predict_and_save(X_test, y_test, "test_predictions_regularization_jieba.csv")
 
 # ===== 訓練結束後畫的loss變化圖 =====
 loss_log = trainer.state.log_history
@@ -374,4 +412,4 @@ plt.ylabel("loss")
 plt.title("Loss Curve")
 plt.legend()
 plt.grid(True)
-plt.savefig("loss_curve.png")
+plt.savefig("loss_curve_regularization_jieba2.png")
