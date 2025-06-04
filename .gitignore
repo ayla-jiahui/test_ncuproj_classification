@@ -164,6 +164,7 @@ cython_debug/
 
 # other directories
 TrainingSet/
+model_*/
 model_output10/
 model_saved/
 .DS_Store
